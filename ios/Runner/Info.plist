@@ -49,6 +49,18 @@
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+	<!-- Location permissions for GPS tracking (driver) and map (passenger) -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Nexus Transit needs your location to show nearby buses and track your trip in real time.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Nexus Transit needs background location access to keep broadcasting your bus position during an active trip.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Nexus Transit needs background location access to keep broadcasting your bus position during an active trip.</string>
+
+	<!-- Camera permission for QR code scanning -->
+	<key>NSCameraUsageDescription</key>
+	<string>Nexus Transit needs camera access to scan passenger QR ticket codes.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
@@ -31,120 +31,274 @@ import '../../features/admin/presentation/screens/admin_analytics_screen.dart';
 import '../../features/admin/presentation/screens/admin_settings_screen.dart';
 import '../../features/admin/presentation/screens/admin_profile_screen.dart';
 
+import '../../features/auth/presentation/providers/auth_provider.dart';
+
 part 'app_router.g.dart';
+
+// ── Route path constants ────────────────────────────────────────────────────
+
+abstract class AppRoutes {
+  static const splash             = '/splash';
+  static const onboarding         = '/onboarding';
+  static const login              = '/login';
+  static const passengerDashboard = '/passenger_dashboard';
+  static const destination        = '/destination';
+  static const buyTicket          = '/buy-ticket';
+  static const passes             = '/passes';
+  static const wallet             = '/wallet';
+  static const scanTicket         = '/scan-ticket';
+
+  static const driverLogin        = '/driver/login';
+  static const driverDashboard    = '/driver/dashboard';
+  static const driverLive         = '/driver/live';
+  static const driverScanner      = '/driver/scanner';
+
+  static const adminLogin         = '/admin/login';
+  static const adminDashboard     = '/admin/dashboard';
+  static const adminDrivers       = '/admin/drivers';
+  static const adminVehicles      = '/admin/vehicles';
+  static const adminRoutes        = '/admin/routes';
+  static const adminFleet         = '/admin/fleet';
+  static const adminTickets       = '/admin/tickets';
+  static const adminPayments      = '/admin/payments';
+  static const adminAnalytics     = '/admin/analytics';
+  static const adminSettings      = '/admin/settings';
+  static const adminProfile       = '/admin/profile';
+}
+
+// ── Passenger-only routes ────────────────────────────────────────────────────
+
+const _passengerRoutes = {
+  AppRoutes.passengerDashboard,
+  AppRoutes.destination,
+  AppRoutes.buyTicket,
+  AppRoutes.passes,
+  AppRoutes.wallet,
+  AppRoutes.scanTicket,
+};
+
+// ── Driver-only routes ────────────────────────────────────────────────────────
+
+const _driverRoutes = {
+  AppRoutes.driverDashboard,
+  AppRoutes.driverLive,
+  AppRoutes.driverScanner,
+};
+
+// ── Admin-only routes ─────────────────────────────────────────────────────────
+
+const _adminRoutes = {
+  AppRoutes.adminDashboard,
+  AppRoutes.adminDrivers,
+  AppRoutes.adminVehicles,
+  AppRoutes.adminRoutes,
+  AppRoutes.adminFleet,
+  AppRoutes.adminTickets,
+  AppRoutes.adminPayments,
+  AppRoutes.adminAnalytics,
+  AppRoutes.adminSettings,
+  AppRoutes.adminProfile,
+};
+
+// ── Router provider ──────────────────────────────────────────────────────────
 
 @riverpod
 GoRouter appRouter(Ref ref) {
+  // Re-evaluate redirect whenever auth state changes
+  final authState = ref.watch(authStateProvider);
+
   return GoRouter(
-    initialLocation: '/splash',
+    initialLocation: AppRoutes.splash,
+    // Redirect fires on every navigation attempt
+    redirect: (context, state) {
+      final path = state.matchedLocation;
+
+      // While the auth stream is loading, stay put
+      if (authState.isLoading) return null;
+
+      final session = authState.value?.session;
+      final isAuthenticated = session != null;
+
+      // ── Unauthenticated user trying to access a protected route ────────────
+      if (!isAuthenticated) {
+        if (_passengerRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.login;
+        }
+        if (_driverRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.driverLogin;
+        }
+        if (_adminRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.adminLogin;
+        }
+        return null; // allow public routes
+      }
+
+      // ── Authenticated user — enforce role-based access ────────────────────
+      final profile = ref.read(currentProfileProvider);
+      if (profile == null) return null; // profile still loading
+
+      final role = profile.role;
+
+      // Passenger trying to access driver/admin routes
+      if (role == 'passenger') {
+        if (_driverRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.passengerDashboard;
+        }
+        if (_adminRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.passengerDashboard;
+        }
+        // Redirect from any login screen back to their dashboard
+        if (path == AppRoutes.login ||
+            path == AppRoutes.driverLogin ||
+            path == AppRoutes.adminLogin) {
+          return AppRoutes.passengerDashboard;
+        }
+      }
+
+      // Driver trying to access passenger/admin routes
+      if (role == 'driver') {
+        if (_passengerRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.driverDashboard;
+        }
+        if (_adminRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.driverDashboard;
+        }
+        if (path == AppRoutes.login ||
+            path == AppRoutes.driverLogin ||
+            path == AppRoutes.adminLogin) {
+          return AppRoutes.driverDashboard;
+        }
+      }
+
+      // Admin trying to access passenger/driver routes
+      if (role == 'admin') {
+        if (_passengerRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.adminDashboard;
+        }
+        if (_driverRoutes.any((r) => path.startsWith(r))) {
+          return AppRoutes.adminDashboard;
+        }
+        if (path == AppRoutes.login ||
+            path == AppRoutes.driverLogin ||
+            path == AppRoutes.adminLogin) {
+          return AppRoutes.adminDashboard;
+        }
+      }
+
+      return null; // no redirect needed
+    },
+
     routes: [
+      // ── Public ─────────────────────────────────────────────────────────────
       GoRoute(
-        path: '/splash',
-        builder: (context, state) => const SplashScreen(),
-      ),
-      // Passenger Routes
-      GoRoute(
-        path: '/onboarding',
-        builder: (context, state) => const OnboardingScreen(),
+        path: AppRoutes.splash,
+        builder: (context, _) => const SplashScreen(),
       ),
       GoRoute(
-        path: '/login',
-        builder: (context, state) => const AuthScreen(),
+        path: AppRoutes.onboarding,
+        builder: (context, _) => const OnboardingScreen(),
+      ),
+
+      // ── Passenger ──────────────────────────────────────────────────────────
+      GoRoute(
+        path: AppRoutes.login,
+        builder: (context, _) => const AuthScreen(),
       ),
       GoRoute(
-        path: '/passenger_dashboard',
-        builder: (context, state) => const PassengerDashboard(),
+        path: AppRoutes.passengerDashboard,
+        builder: (context, _) => const PassengerDashboard(),
       ),
       GoRoute(
-        path: '/destination',
-        builder: (context, state) => const DestinationSelectionScreen(),
+        path: AppRoutes.destination,
+        builder: (context, _) => const DestinationSelectionScreen(),
       ),
       GoRoute(
-        path: '/buy-ticket',
-        builder: (context, state) => const BuyTicketScreen(),
+        path: AppRoutes.buyTicket,
+        builder: (context, _) => const BuyTicketScreen(),
       ),
       GoRoute(
-        path: '/passes',
-        builder: (context, state) => const PassManagementScreen(),
+        path: AppRoutes.passes,
+        builder: (context, _) => const PassManagementScreen(),
       ),
       GoRoute(
-        path: '/wallet',
-        builder: (context, state) => const WalletScreen(),
+        path: AppRoutes.wallet,
+        builder: (context, _) => const WalletScreen(),
       ),
       GoRoute(
-        path: '/scan-ticket',
-        builder: (context, state) => const PassengerQrScannerScreen(),
+        path: AppRoutes.scanTicket,
+        builder: (context, _) => const PassengerQrScannerScreen(),
       ),
-      // Driver Routes
+
+      // ── Driver ─────────────────────────────────────────────────────────────
       GoRoute(
-        path: '/driver/login',
-        builder: (context, state) => const DriverAuthScreen(),
-      ),
-      GoRoute(
-        path: '/driver/dashboard',
-        builder: (context, state) => const DriverDashboard(),
+        path: AppRoutes.driverLogin,
+        builder: (context, _) => const DriverAuthScreen(),
       ),
       GoRoute(
-        path: '/driver/live',
-        builder: (context, state) => const LiveDrivingMode(),
+        path: AppRoutes.driverDashboard,
+        builder: (context, _) => const DriverDashboard(),
       ),
       GoRoute(
-        path: '/driver/scanner',
-        builder: (context, state) => const QRScannerScreen(),
-      ),
-      // Admin Routes
-      GoRoute(
-        path: '/admin/login',
-        builder: (context, state) => const AdminLoginScreen(),
+        path: AppRoutes.driverLive,
+        builder: (context, _) => const LiveDrivingMode(),
       ),
       GoRoute(
-        path: '/admin/dashboard',
-        builder: (context, state) => const AdminDashboardScreen(),
+        path: AppRoutes.driverScanner,
+        builder: (context, _) => const QRScannerScreen(),
+      ),
+
+      // ── Admin ──────────────────────────────────────────────────────────────
+      GoRoute(
+        path: AppRoutes.adminLogin,
+        builder: (context, _) => const AdminLoginScreen(),
       ),
       GoRoute(
-        path: '/admin/drivers',
-        builder: (context, state) => const DriverManagementScreen(),
+        path: AppRoutes.adminDashboard,
+        builder: (context, _) => const AdminDashboardScreen(),
+      ),
+      GoRoute(
+        path: AppRoutes.adminDrivers,
+        builder: (context, _) => const DriverManagementScreen(),
       ),
       GoRoute(
         path: '/admin/drivers/:id',
-        builder: (context, state) {
+        builder: (_, state) {
           final id = state.pathParameters['id']!;
           return AdminDriverDetailsScreen(driverId: id);
         },
       ),
       GoRoute(
-        path: '/admin/vehicles',
-        builder: (context, state) => const AdminVehiclesScreen(),
+        path: AppRoutes.adminVehicles,
+        builder: (context, _) => const AdminVehiclesScreen(),
       ),
       GoRoute(
-        path: '/admin/routes',
-        builder: (context, state) => const AdminRoutesScreen(),
+        path: AppRoutes.adminRoutes,
+        builder: (context, _) => const AdminRoutesScreen(),
       ),
       GoRoute(
-        path: '/admin/tickets',
-        builder: (context, state) => const AdminTicketsScreen(),
+        path: AppRoutes.adminFleet,
+        builder: (context, _) => const AdminLiveFleetScreen(),
       ),
       GoRoute(
-        path: '/admin/payments',
-        builder: (context, state) => const AdminPaymentsScreen(),
+        path: AppRoutes.adminTickets,
+        builder: (context, _) => const AdminTicketsScreen(),
       ),
       GoRoute(
-        path: '/admin/analytics',
-        builder: (context, state) => const AdminAnalyticsScreen(),
+        path: AppRoutes.adminPayments,
+        builder: (context, _) => const AdminPaymentsScreen(),
       ),
       GoRoute(
-        path: '/admin/fleet',
-        builder: (context, state) => const AdminLiveFleetScreen(),
+        path: AppRoutes.adminAnalytics,
+        builder: (context, _) => const AdminAnalyticsScreen(),
       ),
       GoRoute(
-        path: '/admin/settings',
-        builder: (context, state) => const AdminSettingsScreen(),
+        path: AppRoutes.adminSettings,
+        builder: (context, _) => const AdminSettingsScreen(),
       ),
       GoRoute(
-        path: '/admin/profile',
-        builder: (context, state) => const AdminProfileScreen(),
+        path: AppRoutes.adminProfile,
+        builder: (context, _) => const AdminProfileScreen(),
       ),
     ],
   );
 }
-

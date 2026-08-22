@@ -2,23 +2,36 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+
+import '../../../../core/routing/app_router.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/widgets/glass_card.dart';
+import '../../../auth/presentation/providers/auth_provider.dart';
 
 class ProfileTab extends ConsumerWidget {
   const ProfileTab({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final isLight = Theme.of(context).brightness == Brightness.light;
+    final isLight   = Theme.of(context).brightness == Brightness.light;
     final themeMode = ref.watch(themeProvider);
+    final profile   = ref.watch(currentProfileProvider);
+
+    final displayName  = profile?.fullName.isNotEmpty == true
+        ? profile!.fullName
+        : 'Rider';
+    final displayEmail = ref
+            .watch(authRepositoryProvider)
+            .currentUser
+            ?.email ??
+        '';
 
     return SafeArea(
       child: ListView(
-        padding: const EdgeInsets.all(20.0),
+        padding: const EdgeInsets.all(20),
         children: [
-          // Profile Header
+          // ── Profile header ──────────────────────────────────────────────
           Center(
             child: Column(
               children: [
@@ -30,11 +43,20 @@ class ProfileTab extends ConsumerWidget {
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         color: AppTheme.primaryColor.withValues(alpha: 0.2),
-                        border: Border.all(color: AppTheme.primaryColor, width: 2),
+                        border: Border.all(
+                            color: AppTheme.primaryColor, width: 2),
                       ),
-                      child: const Center(
-                        child: Icon(Icons.person, size: 50, color: AppTheme.primaryColor),
-                      ),
+                      child: profile?.avatarUrl != null
+                          ? ClipOval(
+                              child: Image.network(
+                                profile!.avatarUrl!,
+                                fit: BoxFit.cover,
+                              ),
+                            )
+                          : const Center(
+                              child: Icon(Icons.person,
+                                  size: 50, color: AppTheme.primaryColor),
+                            ),
                     ),
                     Positioned(
                       bottom: 0,
@@ -45,28 +67,40 @@ class ProfileTab extends ConsumerWidget {
                           color: AppTheme.accentColor,
                           shape: BoxShape.circle,
                         ),
-                        child: const Icon(Icons.edit, size: 16, color: Colors.white),
+                        child: const Icon(Icons.edit,
+                            size: 16, color: Colors.white),
                       ),
                     ),
                   ],
                 ).animate().scale(duration: 400.ms),
+
                 const SizedBox(height: 16),
+
                 Text(
-                  'Sarah Doe',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+                  displayName,
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleLarge
+                      ?.copyWith(fontWeight: FontWeight.bold),
                 ).animate().fadeIn(delay: 200.ms),
+
                 const SizedBox(height: 4),
+
                 Text(
-                  'sarah.doe@example.com',
-                  style: TextStyle(color: isLight ? Colors.grey.shade600 : Colors.white60),
+                  displayEmail,
+                  style: TextStyle(
+                    color: isLight
+                        ? Colors.grey.shade600
+                        : Colors.white60,
+                  ),
                 ).animate().fadeIn(delay: 300.ms),
               ],
             ),
           ),
-          
+
           const SizedBox(height: 40),
-          
-          // Theme Switcher
+
+          // ── Theme switcher ──────────────────────────────────────────────
           GlassCard(
             color: isLight ? Colors.white : null,
             child: Row(
@@ -74,61 +108,93 @@ class ProfileTab extends ConsumerWidget {
               children: [
                 Row(
                   children: [
-                    Icon(themeMode == ThemeMode.dark ? Icons.dark_mode : Icons.light_mode, color: AppTheme.accentColor),
+                    Icon(
+                      themeMode == ThemeMode.dark
+                          ? Icons.dark_mode
+                          : Icons.light_mode,
+                      color: AppTheme.accentColor,
+                    ),
                     const SizedBox(width: 16),
-                    Text('Appearance', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: isLight ? Colors.black87 : Colors.white)),
+                    Text(
+                      'Appearance',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: isLight ? Colors.black87 : Colors.white,
+                      ),
+                    ),
                   ],
                 ),
                 DropdownButton<ThemeMode>(
                   value: themeMode,
                   underline: const SizedBox(),
-                  dropdownColor: isLight ? Colors.white : AppTheme.surfaceColorDark,
-                  style: TextStyle(color: isLight ? Colors.black87 : Colors.white),
+                  dropdownColor:
+                      isLight ? Colors.white : AppTheme.surfaceColorDark,
+                  style: TextStyle(
+                    color: isLight ? Colors.black87 : Colors.white,
+                  ),
                   items: const [
-                    DropdownMenuItem(value: ThemeMode.light, child: Text('Light')),
-                    DropdownMenuItem(value: ThemeMode.dark, child: Text('Dark')),
-                    DropdownMenuItem(value: ThemeMode.system, child: Text('System')),
+                    DropdownMenuItem(
+                        value: ThemeMode.light, child: Text('Light')),
+                    DropdownMenuItem(
+                        value: ThemeMode.dark, child: Text('Dark')),
+                    DropdownMenuItem(
+                        value: ThemeMode.system, child: Text('System')),
                   ],
                   onChanged: (mode) {
                     if (mode != null) {
-                      ref.read(themeProvider.notifier).setThemeMode(mode);
+                      ref
+                          .read(themeProvider.notifier)
+                          .setThemeMode(mode);
                     }
                   },
                 ),
               ],
             ),
           ).animate().fadeIn(delay: 400.ms).slideX(),
-          
+
           const SizedBox(height: 16),
-          
+
           _buildSettingsGroup(
             'Account',
             [
-              _buildSettingItem(Icons.person_outline, 'Personal Information', isLight),
-              _buildSettingItem(Icons.payment, 'Payment Methods', isLight),
-              _buildSettingItem(Icons.history, 'Ride History', isLight),
+              _buildSettingItem(
+                  Icons.person_outline, 'Personal Information', isLight),
+              _buildSettingItem(
+                  Icons.payment, 'Payment Methods', isLight),
+              _buildSettingItem(
+                  Icons.history, 'Ride History', isLight),
             ],
             500.ms,
           ),
-          
+
           const SizedBox(height: 16),
-          
+
           _buildSettingsGroup(
             'Preferences',
             [
-              _buildSettingItem(Icons.notifications_outlined, 'Notifications', isLight, hasSwitch: true),
-              _buildSettingItem(Icons.security, 'Privacy & Security', isLight),
-              _buildSettingItem(Icons.help_outline, 'Help & Support', isLight),
+              _buildSettingItem(
+                  Icons.notifications_outlined, 'Notifications', isLight,
+                  hasSwitch: true),
+              _buildSettingItem(
+                  Icons.security, 'Privacy & Security', isLight),
+              _buildSettingItem(
+                  Icons.help_outline, 'Help & Support', isLight),
             ],
             600.ms,
           ),
-          
+
           const SizedBox(height: 40),
-          
-          // Logout Button
+
+          // ── Logout ────────────────────────────────────────────────────
           GestureDetector(
-            onTap: () {
-              context.go('/login');
+            onTap: () async {
+              await ref
+                  .read(passengerAuthProvider.notifier)
+                  .signOut();
+              if (context.mounted) {
+                context.go(AppRoutes.login);
+              }
             },
             child: GlassCard(
               color: Colors.red.withValues(alpha: 0.1),
@@ -149,13 +215,15 @@ class ProfileTab extends ConsumerWidget {
               ),
             ),
           ).animate().fadeIn(delay: 700.ms).slideY(begin: 0.5),
+
           const SizedBox(height: 100),
         ],
       ),
     );
   }
 
-  Widget _buildSettingsGroup(String title, List<Widget> items, Duration delay) {
+  Widget _buildSettingsGroup(
+      String title, List<Widget> items, Duration delay) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -163,26 +231,37 @@ class ProfileTab extends ConsumerWidget {
           padding: const EdgeInsets.only(left: 8, bottom: 8),
           child: Text(
             title,
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.grey),
+            style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+                color: Colors.grey),
           ),
         ),
         GlassCard(
           padding: const EdgeInsets.all(0),
-          child: Column(
-            children: items,
-          ),
+          child: Column(children: items),
         ),
       ],
     ).animate().fadeIn(delay: delay).slideX();
   }
 
-  Widget _buildSettingItem(IconData icon, String title, bool isLight, {bool hasSwitch = false}) {
+  Widget _buildSettingItem(IconData icon, String title, bool isLight,
+      {bool hasSwitch = false}) {
     return ListTile(
-      leading: Icon(icon, color: isLight ? Colors.blue.shade700 : Colors.white70),
-      title: Text(title, style: TextStyle(color: isLight ? Colors.black87 : Colors.white)),
+      leading: Icon(icon,
+          color: isLight ? Colors.blue.shade700 : Colors.white70),
+      title: Text(title,
+          style:
+              TextStyle(color: isLight ? Colors.black87 : Colors.white)),
       trailing: hasSwitch
-          ? Switch(value: true, onChanged: (val) {}, activeThumbColor: AppTheme.primaryColor)
-          : Icon(Icons.arrow_forward_ios, size: 16, color: isLight ? Colors.grey : Colors.white54),
+          ? Switch(
+              value: true,
+              onChanged: (val) {},
+              activeThumbColor: AppTheme.primaryColor,
+            )
+          : Icon(Icons.arrow_forward_ios,
+              size: 16,
+              color: isLight ? Colors.grey : Colors.white54),
       onTap: () {},
     );
   }

@@ -12,7 +12,7 @@ class AdminDriverDetailsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Mock Data based on ID
+    // ignore: unused_local_variable — kept for potential light/dark use in future
     final isLight = Theme.of(context).brightness == Brightness.light;
 
     return Scaffold(

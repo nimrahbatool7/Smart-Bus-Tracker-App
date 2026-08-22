@@ -1,152 +1,365 @@
+import 'dart:async';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../../../core/config/supabase_config.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/glass_card.dart';
 
-class TrackTab extends StatefulWidget {
+// ── Realtime bus-location stream (passenger view) ──────────────────────────
+//
+// Selects bus_locations with associated trip/route/bus metadata.
+// Re-emits whenever a row changes (REPLICA IDENTITY FULL must be set on
+// bus_locations — done in migration 00003).
+
+class _LiveBus {
+  const _LiveBus({
+    required this.busId,
+    required this.plateNumber,
+    required this.routeName,
+    required this.latitude,
+    required this.longitude,
+    required this.speedMph,
+  });
+
+  final String busId;
+  final String plateNumber;
+  final String routeName;
+  final double latitude;
+  final double longitude;
+  final double speedMph;
+
+  LatLng get latLng => LatLng(latitude, longitude);
+}
+
+Future<List<_LiveBus>> _fetchBuses(SupabaseClient client) async {
+  final rows = await client.from('bus_locations').select('''
+    bus_id, latitude, longitude, speed_mph,
+    buses ( plate_number, trips ( status, routes ( name ) ) )
+  ''');
+  return (rows as List).map((r) {
+    final m   = r as Map<String, dynamic>;
+    final bus = m['buses'] as Map<String, dynamic>? ?? {};
+    final trips = bus['trips'] as List?;
+    final route = trips?.isNotEmpty == true
+        ? (trips!.first as Map<String, dynamic>)['routes']
+            as Map<String, dynamic>?
+        : null;
+    return _LiveBus(
+      busId:       m['bus_id']          as String,
+      plateNumber: bus['plate_number']  as String? ?? '—',
+      routeName:   route?['name']       as String? ?? '—',
+      latitude:    double.tryParse(m['latitude'].toString())  ?? 0,
+      longitude:   double.tryParse(m['longitude'].toString()) ?? 0,
+      speedMph:    double.tryParse(m['speed_mph'].toString()) ?? 0,
+    );
+  }).toList();
+}
+
+final _liveBusesStreamProvider =
+    StreamProvider.autoDispose<List<_LiveBus>>((ref) {
+  final client     = SupabaseConfig.client;
+  final ctrl       = StreamController<List<_LiveBus>>();
+
+  _fetchBuses(client).then(ctrl.add).catchError(ctrl.addError);
+
+  final channel = client
+      .channel('passenger_tracking')
+      .onPostgresChanges(
+        event:    PostgresChangeEvent.all,
+        schema:   'public',
+        table:    'bus_locations',
+        callback: (_) =>
+            _fetchBuses(client).then(ctrl.add).catchError(ctrl.addError),
+      )
+      .subscribe();
+
+  ref.onDispose(() {
+    client.removeChannel(channel);
+    ctrl.close();
+  });
+
+  return ctrl.stream;
+});
+
+// ── TrackTab widget ────────────────────────────────────────────────────────
+
+class TrackTab extends ConsumerStatefulWidget {
   const TrackTab({super.key});
 
   @override
-  State<TrackTab> createState() => _TrackTabState();
+  ConsumerState<TrackTab> createState() => _TrackTabState();
 }
 
-class _TrackTabState extends State<TrackTab> {
-  static const CameraPosition _initialPosition = CameraPosition(
-    target: LatLng(40.7128, -74.0060),
-    zoom: 14.4746,
-  );
+class _TrackTabState extends ConsumerState<TrackTab> {
+  GoogleMapController? _mapCtrl;
+  _LiveBus?            _selected;
+
+  static const _dark = '''[
+    {"elementType":"geometry","stylers":[{"color":"#212121"}]},
+    {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+    {"elementType":"labels.text.fill","stylers":[{"color":"#757575"}]},
+    {"elementType":"labels.text.stroke","stylers":[{"color":"#212121"}]},
+    {"featureType":"road","elementType":"geometry.fill","stylers":[{"color":"#2c2c2c"}]},
+    {"featureType":"water","elementType":"geometry","stylers":[{"color":"#000000"}]}
+  ]''';
+
+  @override
+  void dispose() {
+    _mapCtrl?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final isLight = Theme.of(context).brightness == Brightness.light;
-    final headerColor = isLight ? AppTheme.lightBlueHeader : Colors.blue.shade900.withValues(alpha: 0.8);
-    final mapStyle = isLight ? '[]' : '''[{"elementType":"geometry","stylers":[{"color":"#212121"}]},{"elementType":"labels.icon","stylers":[{"visibility":"off"}]},{"elementType":"labels.text.fill","stylers":[{"color":"#757575"}]},{"elementType":"labels.text.stroke","stylers":[{"color":"#212121"}]},{"featureType":"administrative","elementType":"geometry","stylers":[{"color":"#757575"}]},{"featureType":"poi","elementType":"geometry","stylers":[{"color":"#181818"}]},{"featureType":"road","elementType":"geometry.fill","stylers":[{"color":"#2c2c2c"}]},{"featureType":"water","elementType":"geometry","stylers":[{"color":"#000000"}]}]''';
+    final isLight     = Theme.of(context).brightness == Brightness.light;
+    final headerColor = isLight
+        ? AppTheme.lightBlueHeader
+        : Colors.blue.shade900.withValues(alpha: 0.8);
+    final busesAsync  = ref.watch(_liveBusesStreamProvider);
+
+    // When new data arrives, update camera if a bus is selected
+    ref.listen(_liveBusesStreamProvider, (_, next) {
+      next.whenData((buses) {
+        if (_selected != null && _mapCtrl != null) {
+          final updated = buses
+              .where((b) => b.busId == _selected!.busId)
+              .firstOrNull;
+          if (updated != null) {
+            setState(() => _selected = updated);
+            _mapCtrl!.animateCamera(
+              CameraUpdate.newLatLng(updated.latLng),
+            );
+          }
+        }
+      });
+    });
 
     return Scaffold(
-      backgroundColor: isLight ? Colors.white : AppTheme.backgroundDark,
+      backgroundColor:
+          isLight ? Colors.white : AppTheme.backgroundDark,
       body: Stack(
         children: [
-          // Map Layer
+          // ── Map ─────────────────────────────────────────────────
           Positioned.fill(
-            child: GoogleMap(
-              initialCameraPosition: _initialPosition,
-              myLocationEnabled: true,
-              myLocationButtonEnabled: false,
-              zoomControlsEnabled: false,
-              mapToolbarEnabled: false,
-              style: mapStyle,
+            child: busesAsync.when(
+              loading: () => const Center(
+                  child: CircularProgressIndicator(
+                      color: AppTheme.primaryColor)),
+              error: (e, _) => Center(
+                child: Text('Map error: $e',
+                    style: const TextStyle(
+                        color: AppTheme.errorColor)),
+              ),
+              data: (buses) => GoogleMap(
+                initialCameraPosition: const CameraPosition(
+                  target: LatLng(40.7128, -74.0060),
+                  zoom: 13,
+                ),
+                myLocationEnabled:       true,
+                myLocationButtonEnabled: false,
+                zoomControlsEnabled:     false,
+                mapToolbarEnabled:       false,
+                style: isLight ? null : _dark,
+                onMapCreated: (c) => _mapCtrl = c,
+                markers: buses.map((b) {
+                  final isSelected = _selected?.busId == b.busId;
+                  return Marker(
+                    markerId: MarkerId(b.busId),
+                    position: b.latLng,
+                    icon: BitmapDescriptor.defaultMarkerWithHue(
+                      isSelected
+                          ? BitmapDescriptor.hueGreen
+                          : BitmapDescriptor.hueCyan,
+                    ),
+                    infoWindow: InfoWindow(
+                      title:   b.routeName,
+                      snippet: '${b.speedMph.toStringAsFixed(0)} mph',
+                    ),
+                    onTap: () => setState(() => _selected = b),
+                  );
+                }).toSet(),
+              ),
             ),
           ),
 
-          // Top App Bar Area
+          // ── Header ──────────────────────────────────────────────
           Positioned(
             top: 0, left: 0, right: 0,
             child: Container(
-              padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top, bottom: 20, left: 16, right: 16),
+              padding: EdgeInsets.only(
+                top: MediaQuery.of(context).padding.top,
+                bottom: 16,
+                left: 16,
+                right: 16,
+              ),
               decoration: BoxDecoration(
                 color: headerColor,
                 borderRadius: const BorderRadius.only(
-                  bottomLeft: Radius.circular(30),
+                  bottomLeft:  Radius.circular(30),
                   bottomRight: Radius.circular(30),
                 ),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.arrow_back_ios, color: Colors.white, size: 20),
+                  const Icon(Icons.arrow_back_ios,
+                      color: Colors.white, size: 20),
                   Expanded(
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        const Text(
-                          'Live Tracking',
-                          style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
+                        const Text('Live Tracking',
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold)),
                         const SizedBox(height: 4),
-                        Text(
-                          'Bus 23A',
-                          style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 14),
+                        busesAsync.maybeWhen(
+                          data: (buses) => Text(
+                            '${buses.length} bus${buses.length == 1 ? '' : 'es'} active',
+                            style: TextStyle(
+                                color: Colors.white
+                                    .withValues(alpha: 0.8),
+                                fontSize: 13),
+                          ),
+                          orElse: () => const SizedBox(),
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(width: 20), // Balance the back button
+                  const SizedBox(width: 20),
                 ],
               ),
             ),
           ).animate().slideY(begin: -1),
 
-          // Bottom Info Card
-          Positioned(
-            bottom: 30, // Since it's inside the dashboard, it needs space for the main bottom nav, or if it's pushed, it sits at bottom.
-            left: 20,
-            right: 20,
-            child: GlassCard(
-              color: isLight ? Colors.white : null,
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('City Center', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: isLight ? Colors.black87 : Colors.white)),
-                          const SizedBox(height: 4),
-                          Text('via Main Street', style: TextStyle(color: isLight ? Colors.grey.shade600 : Colors.white60, fontSize: 14)),
-                        ],
-                      ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text('3 min', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18, color: isLight ? Colors.black87 : Colors.white)),
-                          const SizedBox(height: 4),
-                          Text('Arrival', style: TextStyle(color: isLight ? Colors.grey.shade600 : Colors.white60, fontSize: 14)),
-                        ],
-                      ),
-                    ],
+          // ── Selected bus card ────────────────────────────────────
+          if (_selected != null)
+            Positioned(
+              bottom: 80,
+              left: 20,
+              right: 20,
+              child: GlassCard(
+                color: isLight ? Colors.white : null,
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment:
+                          MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _selected!.routeName,
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 18,
+                                  color: isLight
+                                      ? Colors.black87
+                                      : Colors.white),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              _selected!.plateNumber,
+                              style: TextStyle(
+                                  color: isLight
+                                      ? Colors.grey.shade600
+                                      : Colors.white60,
+                                  fontSize: 14),
+                            ),
+                          ],
+                        ),
+                        Column(
+                          crossAxisAlignment:
+                              CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              '${_selected!.speedMph.toStringAsFixed(0)} mph',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 16,
+                                  color: _selected!.speedMph > 40
+                                      ? Colors.red
+                                      : Colors.green),
+                            ),
+                            Text(
+                              'Live',
+                              style: TextStyle(
+                                  color: isLight
+                                      ? Colors.grey.shade600
+                                      : Colors.white60,
+                                  fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment:
+                          MainAxisAlignment.spaceAround,
+                      children: [
+                        _miniNav(Icons.route,         'Route', true,  isLight),
+                        _miniNav(Icons.location_city, 'Stops', false, isLight),
+                        _miniNav(Icons.info_outline,  'Info',  false, isLight),
+                      ],
+                    ),
+                  ],
+                ),
+              ).animate().slideY(begin: 1).fadeIn(),
+            )
+          else
+            // Empty state — no bus selected
+            Positioned(
+              bottom: 80, left: 20, right: 20,
+              child: GlassCard(
+                color: isLight ? Colors.white : null,
+                padding: const EdgeInsets.all(20),
+                child: Center(
+                  child: Text(
+                    busesAsync.maybeWhen(
+                      data: (b) => b.isEmpty
+                          ? 'No buses active right now'
+                          : 'Tap a bus marker to track it',
+                      orElse: () => 'Loading buses…',
+                    ),
+                    style: TextStyle(
+                        color: isLight
+                            ? Colors.grey.shade600
+                            : Colors.white60),
                   ),
-                  const SizedBox(height: 20),
-                  Divider(color: isLight ? Colors.grey.shade200 : Colors.white12, height: 1),
-                  const SizedBox(height: 20),
-                  Text('Next Stop', style: TextStyle(color: isLight ? Colors.grey.shade500 : Colors.white54, fontSize: 12)),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Central Library', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16, color: isLight ? Colors.black87 : Colors.white)),
-                      Text('500 m', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16, color: isLight ? Colors.black87 : Colors.white)),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  // Fake bottom nav for this card
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildMiniNav(Icons.route, 'Route', true, isLight),
-                      _buildMiniNav(Icons.location_city, 'Stops', false, isLight),
-                      _buildMiniNav(Icons.info_outline, 'Info', false, isLight),
-                    ],
-                  )
-                ],
-              ),
-            ).animate().slideY(begin: 1).fadeIn(),
-          ),
+                ),
+              ).animate().slideY(begin: 1).fadeIn(),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildMiniNav(IconData icon, String label, bool isSelected, bool isLight) {
-    final color = isSelected ? Colors.blue.shade700 : (isLight ? Colors.grey.shade500 : Colors.white54);
+  Widget _miniNav(
+      IconData icon, String label, bool selected, bool isLight) {
+    final color = selected
+        ? Colors.blue.shade700
+        : (isLight ? Colors.grey.shade500 : Colors.white54);
     return Column(
       children: [
         Icon(icon, color: color),
         const SizedBox(height: 4),
-        Text(label, style: TextStyle(color: color, fontSize: 12, fontWeight: isSelected ? FontWeight.bold : FontWeight.normal)),
+        Text(label,
+            style: TextStyle(
+                color: color,
+                fontSize: 12,
+                fontWeight: selected
+                    ? FontWeight.bold
+                    : FontWeight.normal)),
       ],
     );
   }
