@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../../../core/routing/app_router.dart';
 import '../../../../core/theme/app_theme.dart';
@@ -17,27 +18,22 @@ class LiveDrivingMode extends ConsumerStatefulWidget {
 }
 
 class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
-  static const CameraPosition _initialPosition = CameraPosition(
-    target: LatLng(40.7128, -74.0060),
-    zoom: 16.0,
-    tilt: 45.0,
-  );
+  // Default center — overridden by GPS once acquired
+  static const _defaultCenter = LatLng(40.7128, -74.0060);
 
-  GoogleMapController? _mapController;
+  final MapController _mapCtrl = MapController();
 
-  // Cached trip/bus IDs loaded from the active trip
   String? _tripId;
   String? _busId;
 
   @override
   void initState() {
     super.initState();
-    // Load assignment and start broadcasting once the widget tree is ready
-    WidgetsBinding.instance.addPostFrameCallback((_) => _startBroadcast());
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _startBroadcast());
   }
 
   Future<void> _startBroadcast() async {
-    // Pull the active trip from the provider
     final assignment = await ref.read(driverAssignmentProvider.future);
     if (assignment == null) return;
 
@@ -51,21 +47,18 @@ class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
 
   Future<void> _endTrip() async {
     if (_tripId == null || _busId == null) {
-      context.go(AppRoutes.driverDashboard);
+      if (mounted) context.go(AppRoutes.driverDashboard);
       return;
     }
 
-    // Stop GPS stream first
     ref.read(locationBroadcasterProvider.notifier).stop();
 
-    // Close trip in DB
     await ref.read(tripNotifierProvider.notifier).endTrip(
           tripId: _tripId!,
           busId:  _busId!,
         );
 
     if (mounted) {
-      // Refresh dashboard assignment
       ref.invalidate(driverAssignmentProvider);
       context.go(AppRoutes.driverDashboard);
     }
@@ -74,49 +67,61 @@ class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
   @override
   void dispose() {
     ref.read(locationBroadcasterProvider.notifier).stop();
-    _mapController?.dispose();
+    _mapCtrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final speedMph  = ref.watch(locationBroadcasterProvider);
+    final speedMph   = ref.watch(locationBroadcasterProvider);
     final isSpeeding = speedMph > 40;
 
     return Scaffold(
       body: Stack(
         children: [
-          // ── Map ─────────────────────────────────────────────────────
-          GoogleMap(
-            initialCameraPosition: _initialPosition,
-            myLocationEnabled:      true,
-            myLocationButtonEnabled: false,
-            zoomControlsEnabled:    false,
-            mapToolbarEnabled:      false,
-            onMapCreated: (c) => _mapController = c,
-            style: '''[
-              {"elementType":"geometry","stylers":[{"color":"#212121"}]},
-              {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
-              {"elementType":"labels.text.fill","stylers":[{"color":"#757575"}]},
-              {"elementType":"labels.text.stroke","stylers":[{"color":"#212121"}]},
-              {"featureType":"road","elementType":"geometry.fill","stylers":[{"color":"#2c2c2c"}]},
-              {"featureType":"water","elementType":"geometry","stylers":[{"color":"#000000"}]}
-            ]''',
+          // ── OpenStreetMap (driver's view — no markers, GPS dot via myLocation)
+          Positioned.fill(
+            child: FlutterMap(
+              mapController: _mapCtrl,
+              options: const MapOptions(
+                initialCenter: _defaultCenter,
+                initialZoom:   16.0,
+                interactionOptions: InteractionOptions(
+                  flags: InteractiveFlag.all,
+                ),
+              ),
+              children: [
+                TileLayer(
+                  urlTemplate:
+                      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName:
+                      'com.example.smart_bus_tracking_app',
+                  maxZoom: 19,
+                ),
+                // Attribution required by OSM tile usage policy
+                const RichAttributionWidget(
+                  attributions: [
+                    TextSourceAttribution('© OpenStreetMap contributors'),
+                  ],
+                ),
+              ],
+            ),
           ),
 
-          // ── Speed violation overlay ──────────────────────────────────
+          // ── Speed violation red border overlay ────────────────────
           if (isSpeeding)
             Positioned.fill(
               child: Container(
                 decoration: BoxDecoration(
                   border: Border.all(
-                      color: Colors.red.withOpacity(0.5), width: 10),
+                      color: Colors.red.withValues(alpha: 0.5),
+                      width: 10),
                 ),
               ).animate(onPlay: (c) => c.repeat(reverse: true))
                .fade(duration: 500.ms),
             ),
 
-          // ── Top info bar ─────────────────────────────────────────────
+          // ── Top info bar ───────────────────────────────────────────
           Positioned(
             top: 50, left: 20, right: 20,
             child: GlassCard(
@@ -131,11 +136,12 @@ class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
                     children: [
                       Text('Trip Active',
                           style: TextStyle(
-                              color: Colors.white.withOpacity(0.5),
+                              color: Colors.white.withValues(alpha: 0.5),
                               fontSize: 12)),
                       const Text('GPS Broadcasting',
                           style: TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.bold)),
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold)),
                     ],
                   ),
                   Row(
@@ -162,27 +168,23 @@ class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
             ).animate().slideY(begin: -0.5).fadeIn(),
           ),
 
-          // ── Speedometer ──────────────────────────────────────────────
+          // ── Speedometer ────────────────────────────────────────────
           Positioned(
             bottom: 30, right: 20,
             child: Container(
-              width: 90,
+              width:  90,
               height: 90,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: AppTheme.backgroundDark.withOpacity(0.85),
+                color: AppTheme.backgroundDark.withValues(alpha: 0.85),
                 border: Border.all(
-                  color: isSpeeding
-                      ? Colors.red
-                      : AppTheme.primaryColor,
+                  color: isSpeeding ? Colors.red : AppTheme.primaryColor,
                   width: 4,
                 ),
                 boxShadow: [
                   BoxShadow(
-                    color: (isSpeeding
-                            ? Colors.red
-                            : AppTheme.primaryColor)
-                        .withOpacity(0.3),
+                    color: (isSpeeding ? Colors.red : AppTheme.primaryColor)
+                        .withValues(alpha: 0.3),
                     blurRadius: 20,
                     spreadRadius: 2,
                   ),
@@ -196,34 +198,31 @@ class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
                     style: TextStyle(
                       fontSize: 32,
                       fontWeight: FontWeight.bold,
-                      color:
-                          isSpeeding ? Colors.red : Colors.white,
+                      color: isSpeeding ? Colors.red : Colors.white,
                     ),
                   ),
                   Text('MPH',
                       style: TextStyle(
-                          color: Colors.white.withOpacity(0.5),
+                          color: Colors.white.withValues(alpha: 0.5),
                           fontSize: 12)),
                 ],
               ),
             ).animate().scale(delay: 400.ms),
           ),
 
-          // ── Bottom left actions ──────────────────────────────────────
+          // ── Bottom actions ─────────────────────────────────────────
           Positioned(
             bottom: 30, left: 20,
             child: Column(
               children: [
-                // QR scanner button
                 _buildAction(
-                  icon: Icons.qr_code_scanner,
+                  icon:  Icons.qr_code_scanner,
                   color: AppTheme.accentColor,
                   onTap: () => context.push(AppRoutes.driverScanner),
                 ),
                 const SizedBox(height: 16),
-                // End trip button
                 _buildAction(
-                  icon: Icons.stop_circle,
+                  icon:  Icons.stop_circle,
                   color: Colors.redAccent,
                   onTap: () => _showEndConfirmation(context),
                 ),
@@ -237,15 +236,15 @@ class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
 
   Widget _buildAction({
     required IconData icon,
-    required Color color,
+    required Color     color,
     required VoidCallback onTap,
   }) {
     return GestureDetector(
       onTap: onTap,
       child: GlassCard(
-        padding: const EdgeInsets.all(16),
+        padding:      const EdgeInsets.all(16),
         borderRadius: 20,
-        color: color.withOpacity(0.2),
+        color: color.withValues(alpha: 0.2),
         child: Icon(icon, color: Colors.white, size: 28),
       ),
     ).animate().slideX(begin: -0.5).fadeIn(delay: 500.ms);
@@ -259,7 +258,7 @@ class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(20),
             side: const BorderSide(color: Colors.white12)),
-        title: const Text('End Trip?',
+        title:   const Text('End Trip?',
             style: TextStyle(color: Colors.white)),
         content: const Text(
           'This will stop GPS tracking and mark the trip as completed.',
@@ -283,7 +282,8 @@ class _LiveDrivingModeState extends ConsumerState<LiveDrivingMode> {
             },
             child: const Text('End Trip',
                 style: TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.bold)),
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold)),
           ),
         ],
       ),

@@ -23,8 +23,10 @@ dependencies:
   flutter_animate: ^4.5.2
   cupertino_icons: ^1.0.8
 
-  # Maps & charts
-  google_maps_flutter: ^2.17.1
+  # Maps (OpenStreetMap — free, no API key required)
+  flutter_map: ^7.0.2
+  latlong2: ^0.9.1
+  # Charts
   fl_chart: ^1.2.0
 
   # QR scanning (real camera)

@@ -18,10 +18,6 @@ class Env {
     assert(v.isNotEmpty, 'SUPABASE_ANON_KEY is missing from .env');
     return v;
   }
-
-  static String get googleMapsApiKey {
-    final v = dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
-    assert(v.isNotEmpty, 'GOOGLE_MAPS_API_KEY is missing from .env');
-    return v;
-  }
+  // NOTE: GOOGLE_MAPS_API_KEY has been removed.
+  // This app uses flutter_map + OpenStreetMap tiles which require no API key.
 }

@@ -1,21 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- ── Network ───────────────────────────────────────────────────── -->
+    <!-- ── Network ─────────────────────────────────────────────────────── -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- ── Location (GPS broadcasting for driver, map for passenger) ─── -->
+    <!-- ── Location (GPS tracking for driver, map for passenger) ────────── -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- Background location for live driving mode (Android 10+) -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
-    <!-- ── Camera (QR scanner) ────────────────────────────────────────── -->
+    <!-- ── Camera (QR scanner) ─────────────────────────────────────────── -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
-    <!-- ── Vibration (optional — QR scan feedback) ───────────────────── -->
+    <!-- ── Vibration (QR scan feedback) ────────────────────────────────── -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
@@ -23,10 +22,8 @@
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
-        <!-- Google Maps API key — replace with real key from .env / CI secret -->
-        <meta-data
-            android:name="com.google.android.geo.API_KEY"
-            android:value="${GOOGLE_MAPS_API_KEY}" />
+        <!-- NOTE: No Google Maps API key meta-data required.
+             This app uses flutter_map + OpenStreetMap tiles (no key needed). -->
 
         <activity
             android:name=".MainActivity"

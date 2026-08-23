@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/glass_card.dart';
@@ -15,24 +16,19 @@ class AdminLiveFleetScreen extends ConsumerStatefulWidget {
       _AdminLiveFleetScreenState();
 }
 
-class _AdminLiveFleetScreenState extends ConsumerState<AdminLiveFleetScreen> {
-  static const CameraPosition _initial = CameraPosition(
-    target: LatLng(40.7128, -74.0060),
-    zoom: 12.0,
-  );
+class _AdminLiveFleetScreenState
+    extends ConsumerState<AdminLiveFleetScreen> {
+  static const _defaultCenter = LatLng(40.7128, -74.0060);
+  static const _defaultZoom   = 12.0;
 
-  static const _mapStyle =
-      '[{"elementType":"geometry","stylers":[{"color":"#212121"}]},'
-      '{"elementType":"labels.icon","stylers":[{"visibility":"off"}]},'
-      '{"elementType":"labels.text.fill","stylers":[{"color":"#757575"}]},'
-      '{"featureType":"road","elementType":"geometry.fill","stylers":[{"color":"#2c2c2c"}]},'
-      '{"featureType":"water","elementType":"geometry","stylers":[{"color":"#000000"}]}]';
-
-  // _mapCtrl is intentionally kept: used in onMapCreated for future camera
-  // animations when a bus is tapped. Suppress lint with ignore comment.
-  // ignore: unused_field
-  GoogleMapController? _mapCtrl;
+  final MapController _mapCtrl = MapController();
   BusLocationSnapshot? _selected;
+
+  @override
+  void dispose() {
+    _mapCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -42,52 +38,128 @@ class _AdminLiveFleetScreenState extends ConsumerState<AdminLiveFleetScreen> {
       selectedIndex: 4,
       child: Stack(
         children: [
-          // ── Map ───────────────────────────────────────────────────
+          // ── OpenStreetMap tile layer + fleet markers ──────────────
           fleetAsync.when(
             loading: () => const Center(
                 child: CircularProgressIndicator(
                     color: AppTheme.primaryColor)),
             error: (e, _) => Center(
               child: Text('Fleet error: $e',
-                  style: const TextStyle(color: AppTheme.errorColor)),
+                  style:
+                      const TextStyle(color: AppTheme.errorColor)),
             ),
-            data: (buses) => GoogleMap(
-              initialCameraPosition: _initial,
-              style: _mapStyle,
-              myLocationEnabled:    false,
-              zoomControlsEnabled:  false,
-              onMapCreated: (c) => _mapCtrl = c,
-              markers: buses.map((b) {
-                return Marker(
-                  markerId: MarkerId(b.busId),
-                  position: LatLng(b.latitude, b.longitude),
-                  infoWindow: InfoWindow(
-                    title:   b.plateNumber,
-                    snippet: '${b.routeName} • ${b.speedMph.toStringAsFixed(0)} mph',
-                  ),
-                  icon: BitmapDescriptor.defaultMarkerWithHue(
-                    b.speedMph > 40
-                        ? BitmapDescriptor.hueRed
-                        : BitmapDescriptor.hueCyan,
-                  ),
-                  onTap: () => setState(() => _selected = b),
-                );
-              }).toSet(),
+            data: (buses) => FlutterMap(
+              mapController: _mapCtrl,
+              options: MapOptions(
+                initialCenter: buses.isNotEmpty
+                    ? LatLng(buses.first.latitude,
+                             buses.first.longitude)
+                    : _defaultCenter,
+                initialZoom: _defaultZoom,
+                interactionOptions: const InteractionOptions(
+                  flags: InteractiveFlag.all,
+                ),
+              ),
+              children: [
+                // ── Tile layer ──────────────────────────────────────
+                TileLayer(
+                  urlTemplate:
+                      'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName:
+                      'com.example.smart_bus_tracking_app',
+                  maxZoom: 19,
+                ),
+
+                // ── Fleet markers ───────────────────────────────────
+                MarkerLayer(
+                  markers: buses.map((b) {
+                    final isSpeeding = b.speedMph > 40;
+                    final isSelected =
+                        _selected?.busId == b.busId;
+                    final markerColor = isSpeeding
+                        ? Colors.red
+                        : Colors.cyan.shade700;
+
+                    return Marker(
+                      point:  LatLng(b.latitude, b.longitude),
+                      width:  isSelected ? 52 : 42,
+                      height: isSelected ? 52 : 42,
+                      child: GestureDetector(
+                        onTap: () =>
+                            setState(() => _selected = b),
+                        child: Column(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: markerColor,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                    color: Colors.white, width: 2),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: markerColor
+                                        .withValues(alpha: 0.5),
+                                    blurRadius: 8,
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.directions_bus,
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                            ),
+                            Container(
+                              padding:
+                                  const EdgeInsets.symmetric(
+                                      horizontal: 4, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                borderRadius:
+                                    BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                b.plateNumber,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+
+                // ── OSM attribution ─────────────────────────────────
+                const RichAttributionWidget(
+                  attributions: [
+                    TextSourceAttribution(
+                        '© OpenStreetMap contributors'),
+                  ],
+                ),
+              ],
             ),
           ),
 
-          // ── Top bar ────────────────────────────────────────────────
+          // ── Top search bar + active count ─────────────────────────
           Positioned(
             top: 16, left: 16, right: 16,
             child: GlassCard(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 10),
               child: Row(
                 children: [
                   const Icon(Icons.search, color: Colors.white54),
                   const SizedBox(width: 12),
                   const Expanded(
-                    child: Text('Fleet overview — real-time GPS',
-                        style: TextStyle(color: Colors.white54)),
+                    child: Text(
+                      'Fleet overview — real-time GPS',
+                      style: TextStyle(color: Colors.white54),
+                    ),
                   ),
                   fleetAsync.maybeWhen(
                     data: (buses) => Container(
@@ -117,7 +189,7 @@ class _AdminLiveFleetScreenState extends ConsumerState<AdminLiveFleetScreen> {
             ),
           ),
 
-          // ── Selected bus card ──────────────────────────────────────
+          // ── Selected bus info card ────────────────────────────────
           if (_selected != null)
             Positioned(
               bottom: 16, left: 16, right: 16,
@@ -128,7 +200,8 @@ class _AdminLiveFleetScreenState extends ConsumerState<AdminLiveFleetScreen> {
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
-                        color: AppTheme.primaryColor.withValues(alpha: 0.2),
+                        color: AppTheme.primaryColor
+                            .withValues(alpha: 0.2),
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: const Icon(Icons.directions_bus,
@@ -146,10 +219,12 @@ class _AdminLiveFleetScreenState extends ConsumerState<AdminLiveFleetScreen> {
                                   fontSize: 18)),
                           Text('Route: ${_selected!.routeName}',
                               style: const TextStyle(
-                                  color: Colors.white70, fontSize: 14)),
+                                  color: Colors.white70,
+                                  fontSize: 14)),
                           Text('Driver: ${_selected!.driverName}',
                               style: const TextStyle(
-                                  color: Colors.white54, fontSize: 12)),
+                                  color: Colors.white54,
+                                  fontSize: 12)),
                         ],
                       ),
                     ),
@@ -167,10 +242,12 @@ class _AdminLiveFleetScreenState extends ConsumerState<AdminLiveFleetScreen> {
                           ),
                         ),
                         GestureDetector(
-                          onTap: () => setState(() => _selected = null),
+                          onTap: () =>
+                              setState(() => _selected = null),
                           child: const Text('dismiss',
                               style: TextStyle(
-                                  color: Colors.white38, fontSize: 12)),
+                                  color: Colors.white38,
+                                  fontSize: 12)),
                         ),
                       ],
                     ),

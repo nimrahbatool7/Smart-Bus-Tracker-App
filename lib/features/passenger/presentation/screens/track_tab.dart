@@ -1,20 +1,16 @@
 import 'dart:async';
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/config/supabase_config.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/glass_card.dart';
 
-// ── Realtime bus-location stream (passenger view) ──────────────────────────
-//
-// Selects bus_locations with associated trip/route/bus metadata.
-// Re-emits whenever a row changes (REPLICA IDENTITY FULL must be set on
-// bus_locations — done in migration 00003).
+// ── Live bus model ────────────────────────────────────────────────────────
 
 class _LiveBus {
   const _LiveBus({
@@ -36,23 +32,25 @@ class _LiveBus {
   LatLng get latLng => LatLng(latitude, longitude);
 }
 
+// ── Supabase fetch helper ─────────────────────────────────────────────────
+
 Future<List<_LiveBus>> _fetchBuses(SupabaseClient client) async {
   final rows = await client.from('bus_locations').select('''
     bus_id, latitude, longitude, speed_mph,
     buses ( plate_number, trips ( status, routes ( name ) ) )
   ''');
   return (rows as List).map((r) {
-    final m   = r as Map<String, dynamic>;
-    final bus = m['buses'] as Map<String, dynamic>? ?? {};
+    final m     = r as Map<String, dynamic>;
+    final bus   = m['buses']  as Map<String, dynamic>? ?? {};
     final trips = bus['trips'] as List?;
     final route = trips?.isNotEmpty == true
         ? (trips!.first as Map<String, dynamic>)['routes']
             as Map<String, dynamic>?
         : null;
     return _LiveBus(
-      busId:       m['bus_id']          as String,
-      plateNumber: bus['plate_number']  as String? ?? '—',
-      routeName:   route?['name']       as String? ?? '—',
+      busId:       m['bus_id']         as String,
+      plateNumber: bus['plate_number'] as String? ?? '—',
+      routeName:   route?['name']      as String? ?? '—',
       latitude:    double.tryParse(m['latitude'].toString())  ?? 0,
       longitude:   double.tryParse(m['longitude'].toString()) ?? 0,
       speedMph:    double.tryParse(m['speed_mph'].toString()) ?? 0,
@@ -60,10 +58,12 @@ Future<List<_LiveBus>> _fetchBuses(SupabaseClient client) async {
   }).toList();
 }
 
+// ── Realtime stream provider ──────────────────────────────────────────────
+
 final _liveBusesStreamProvider =
     StreamProvider.autoDispose<List<_LiveBus>>((ref) {
-  final client     = SupabaseConfig.client;
-  final ctrl       = StreamController<List<_LiveBus>>();
+  final client = SupabaseConfig.client;
+  final ctrl   = StreamController<List<_LiveBus>>();
 
   _fetchBuses(client).then(ctrl.add).catchError(ctrl.addError);
 
@@ -73,8 +73,9 @@ final _liveBusesStreamProvider =
         event:    PostgresChangeEvent.all,
         schema:   'public',
         table:    'bus_locations',
-        callback: (_) =>
-            _fetchBuses(client).then(ctrl.add).catchError(ctrl.addError),
+        callback: (_) => _fetchBuses(client)
+            .then(ctrl.add)
+            .catchError(ctrl.addError),
       )
       .subscribe();
 
@@ -86,7 +87,7 @@ final _liveBusesStreamProvider =
   return ctrl.stream;
 });
 
-// ── TrackTab widget ────────────────────────────────────────────────────────
+// ── TrackTab widget ───────────────────────────────────────────────────────
 
 class TrackTab extends ConsumerStatefulWidget {
   const TrackTab({super.key});
@@ -96,21 +97,16 @@ class TrackTab extends ConsumerStatefulWidget {
 }
 
 class _TrackTabState extends ConsumerState<TrackTab> {
-  GoogleMapController? _mapCtrl;
-  _LiveBus?            _selected;
+  final MapController _mapCtrl = MapController();
+  _LiveBus? _selected;
 
-  static const _dark = '''[
-    {"elementType":"geometry","stylers":[{"color":"#212121"}]},
-    {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
-    {"elementType":"labels.text.fill","stylers":[{"color":"#757575"}]},
-    {"elementType":"labels.text.stroke","stylers":[{"color":"#212121"}]},
-    {"featureType":"road","elementType":"geometry.fill","stylers":[{"color":"#2c2c2c"}]},
-    {"featureType":"water","elementType":"geometry","stylers":[{"color":"#000000"}]}
-  ]''';
+  // Default center: New York City (will pan to first bus once data arrives)
+  static const _defaultCenter = LatLng(40.7128, -74.0060);
+  static const _defaultZoom   = 13.0;
 
   @override
   void dispose() {
-    _mapCtrl?.dispose();
+    _mapCtrl.dispose();
     super.dispose();
   }
 
@@ -122,29 +118,26 @@ class _TrackTabState extends ConsumerState<TrackTab> {
         : Colors.blue.shade900.withValues(alpha: 0.8);
     final busesAsync  = ref.watch(_liveBusesStreamProvider);
 
-    // When new data arrives, update camera if a bus is selected
+    // When new data arrives, pan the map to the selected bus
     ref.listen(_liveBusesStreamProvider, (_, next) {
       next.whenData((buses) {
-        if (_selected != null && _mapCtrl != null) {
+        if (_selected != null) {
           final updated = buses
               .where((b) => b.busId == _selected!.busId)
               .firstOrNull;
           if (updated != null) {
             setState(() => _selected = updated);
-            _mapCtrl!.animateCamera(
-              CameraUpdate.newLatLng(updated.latLng),
-            );
+            _mapCtrl.move(updated.latLng, _mapCtrl.camera.zoom);
           }
         }
       });
     });
 
     return Scaffold(
-      backgroundColor:
-          isLight ? Colors.white : AppTheme.backgroundDark,
+      backgroundColor: isLight ? Colors.white : AppTheme.backgroundDark,
       body: Stack(
         children: [
-          // ── Map ─────────────────────────────────────────────────
+          // ── OpenStreetMap via flutter_map ────────────────────────
           Positioned.fill(
             child: busesAsync.when(
               loading: () => const Center(
@@ -152,37 +145,81 @@ class _TrackTabState extends ConsumerState<TrackTab> {
                       color: AppTheme.primaryColor)),
               error: (e, _) => Center(
                 child: Text('Map error: $e',
-                    style: const TextStyle(
-                        color: AppTheme.errorColor)),
+                    style:
+                        const TextStyle(color: AppTheme.errorColor)),
               ),
-              data: (buses) => GoogleMap(
-                initialCameraPosition: const CameraPosition(
-                  target: LatLng(40.7128, -74.0060),
-                  zoom: 13,
+              data: (buses) => FlutterMap(
+                mapController: _mapCtrl,
+                options: MapOptions(
+                  initialCenter: buses.isNotEmpty
+                      ? buses.first.latLng
+                      : _defaultCenter,
+                  initialZoom:  _defaultZoom,
+                  interactionOptions: const InteractionOptions(
+                    flags: InteractiveFlag.all,
+                  ),
                 ),
-                myLocationEnabled:       true,
-                myLocationButtonEnabled: false,
-                zoomControlsEnabled:     false,
-                mapToolbarEnabled:       false,
-                style: isLight ? null : _dark,
-                onMapCreated: (c) => _mapCtrl = c,
-                markers: buses.map((b) {
-                  final isSelected = _selected?.busId == b.busId;
-                  return Marker(
-                    markerId: MarkerId(b.busId),
-                    position: b.latLng,
-                    icon: BitmapDescriptor.defaultMarkerWithHue(
-                      isSelected
-                          ? BitmapDescriptor.hueGreen
-                          : BitmapDescriptor.hueCyan,
-                    ),
-                    infoWindow: InfoWindow(
-                      title:   b.routeName,
-                      snippet: '${b.speedMph.toStringAsFixed(0)} mph',
-                    ),
-                    onTap: () => setState(() => _selected = b),
-                  );
-                }).toSet(),
+                children: [
+                  // ── Tile layer — OpenStreetMap ───────────────────
+                  TileLayer(
+                    urlTemplate:
+                        'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                    userAgentPackageName:
+                        'com.example.smart_bus_tracking_app',
+                    maxZoom: 19,
+                    // Respect OSM tile usage policy:
+                    // cache tiles, identifiable User-Agent, attribution shown
+                  ),
+
+                  // ── Bus markers ──────────────────────────────────
+                  MarkerLayer(
+                    markers: buses.map((b) {
+                      final isSelected = _selected?.busId == b.busId;
+                      final markerColor = isSelected
+                          ? Colors.green
+                          : Colors.cyan.shade700;
+                      return Marker(
+                        point:  b.latLng,
+                        width:  isSelected ? 48 : 40,
+                        height: isSelected ? 48 : 40,
+                        child: GestureDetector(
+                          onTap: () => setState(() => _selected = b),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: markerColor,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                  color: Colors.white, width: 2),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: markerColor
+                                      .withValues(alpha: 0.5),
+                                  blurRadius: 8,
+                                  spreadRadius: 2,
+                                ),
+                              ],
+                            ),
+                            child: const Icon(
+                              Icons.directions_bus,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+
+                  // ── OSM attribution (required by OSM tile policy) ─
+                  const RichAttributionWidget(
+                    attributions: [
+                      TextSourceAttribution(
+                        '© OpenStreetMap contributors',
+                        // onTap: opens osm copyright page — handled internally
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
@@ -192,10 +229,10 @@ class _TrackTabState extends ConsumerState<TrackTab> {
             top: 0, left: 0, right: 0,
             child: Container(
               padding: EdgeInsets.only(
-                top: MediaQuery.of(context).padding.top,
+                top:    MediaQuery.of(context).padding.top,
                 bottom: 16,
-                left: 16,
-                right: 16,
+                left:   16,
+                right:  16,
               ),
               decoration: BoxDecoration(
                 color: headerColor,
@@ -239,9 +276,7 @@ class _TrackTabState extends ConsumerState<TrackTab> {
           // ── Selected bus card ────────────────────────────────────
           if (_selected != null)
             Positioned(
-              bottom: 80,
-              left: 20,
-              right: 20,
+              bottom: 80, left: 20, right: 20,
               child: GlassCard(
                 color: isLight ? Colors.white : null,
                 padding: const EdgeInsets.all(24),
@@ -250,12 +285,10 @@ class _TrackTabState extends ConsumerState<TrackTab> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
-                      mainAxisAlignment:
-                          MainAxisAlignment.spaceBetween,
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
                               _selected!.routeName,
@@ -278,8 +311,7 @@ class _TrackTabState extends ConsumerState<TrackTab> {
                           ],
                         ),
                         Column(
-                          crossAxisAlignment:
-                              CrossAxisAlignment.end,
+                          crossAxisAlignment: CrossAxisAlignment.end,
                           children: [
                             Text(
                               '${_selected!.speedMph.toStringAsFixed(0)} mph',
@@ -290,26 +322,18 @@ class _TrackTabState extends ConsumerState<TrackTab> {
                                       ? Colors.red
                                       : Colors.green),
                             ),
-                            Text(
-                              'Live',
-                              style: TextStyle(
-                                  color: isLight
-                                      ? Colors.grey.shade600
-                                      : Colors.white60,
-                                  fontSize: 12),
+                            GestureDetector(
+                              onTap: () =>
+                                  setState(() => _selected = null),
+                              child: Text('dismiss',
+                                  style: TextStyle(
+                                      color: isLight
+                                          ? Colors.grey.shade500
+                                          : Colors.white38,
+                                      fontSize: 12)),
                             ),
                           ],
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment:
-                          MainAxisAlignment.spaceAround,
-                      children: [
-                        _miniNav(Icons.route,         'Route', true,  isLight),
-                        _miniNav(Icons.location_city, 'Stops', false, isLight),
-                        _miniNav(Icons.info_outline,  'Info',  false, isLight),
                       ],
                     ),
                   ],
@@ -317,7 +341,6 @@ class _TrackTabState extends ConsumerState<TrackTab> {
               ).animate().slideY(begin: 1).fadeIn(),
             )
           else
-            // Empty state — no bus selected
             Positioned(
               bottom: 80, left: 20, right: 20,
               child: GlassCard(
@@ -341,26 +364,6 @@ class _TrackTabState extends ConsumerState<TrackTab> {
             ),
         ],
       ),
-    );
-  }
-
-  Widget _miniNav(
-      IconData icon, String label, bool selected, bool isLight) {
-    final color = selected
-        ? Colors.blue.shade700
-        : (isLight ? Colors.grey.shade500 : Colors.white54);
-    return Column(
-      children: [
-        Icon(icon, color: color),
-        const SizedBox(height: 4),
-        Text(label,
-            style: TextStyle(
-                color: color,
-                fontSize: 12,
-                fontWeight: selected
-                    ? FontWeight.bold
-                    : FontWeight.normal)),
-      ],
     );
   }
 }
