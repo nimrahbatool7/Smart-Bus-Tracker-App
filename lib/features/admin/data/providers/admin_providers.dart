@@ -152,7 +152,15 @@ final driversProvider =
   }
 });
 
-final driverSearchQueryProvider = StateProvider<String>((_) => '');
+// Search query for driver management screen
+class _SearchNotifier extends Notifier<String> {
+  @override
+  String build() => '';
+  void update(String q) => state = q;
+}
+
+final driverSearchQueryProvider =
+    NotifierProvider<_SearchNotifier, String>(_SearchNotifier.new);
 
 final filteredDriversProvider =
     Provider.autoDispose<AsyncValue<List<DriverProfile>>>((ref) {

@@ -91,7 +91,7 @@ class DriverManagementScreen extends ConsumerWidget {
                       ),
                       onChanged: (v) => ref
                           .read(driverSearchQueryProvider.notifier)
-                          .state = v,
+                          .update(v),
                     ),
                   ),
                 ],
